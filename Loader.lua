@@ -134,11 +134,6 @@ local localplayer = lplr
 local LocalPlayer = lplr
 local ReplicatedStorage = rs
 local RunService = runservice
-local Camera = workspace.CurrentCamera
-local Content = nil
-pcall(function()
-    Content = game:GetService("ContentProvider")
-end)
 
 local util, enums, useItemRemote, fighterCtrl
 pcall(function()
@@ -2588,11 +2583,6 @@ local _legitBotHitMsg = nil
 local _legitBotKillMsg = nil
 local _legitBotMsgTimer = 0
 local _legitBotMsgDuration = 2
-local _legitBotBaseText = ""
-local _legitBotDots = {".", "..", "..."}
-local _legitBotDotIndex = 1
-local _legitBotTimer = 0
-local _legitBotInterval = 0.35
 local _legitBotTrackedHumans = setmetatable({}, { __mode = "k" })
 
 local function _legitBotTrackCharacter(character)
@@ -3142,431 +3132,6 @@ CharacterLeft:AddToggle("FastMelee", {
 }):AddKeyPicker("FastMeleeKeybind", {
 	Default = "None", SyncToggleState = true, Mode = "Toggle", Text = "Fast Melee / Fast Reload", NoUI = false,
 })
-
--- =====================================================================
--- CHARACTER TAB — No Animation
--- =====================================================================
-
-local VisualStateAnim = {
-    ViewmodelHooked = false,
-    AimingHooked = false,
-    OriginalViewmodelUpdate = nil,
-    OriginalViewmodelMuzzleFlash = nil,
-    OriginalViewmodelSetAiming = nil,
-    OriginalViewmodelPlayAnimation = nil,
-    OriginalAnimatorPlayAnimation = nil,
-    OriginalGunStartAiming = nil,
-    OriginalGunGetAimSpeed = nil,
-}
-
-local viewmodelDisableList = {
-    "sway", "tilt", "bobbing", "muzzle flash", "idle animation", "jump animation",
-    "slide animation", "equip animation", "shoot animation", "aiming animation", "sprint animation",
-    "reload animation",
-}
-
-local VMDisabled = { Value = {} }
-
-local function _vmHas(tbl, key)
-    if type(tbl) ~= "table" then return false end
-    return tbl[key] == true
-end
-
-local function _disableSelected(name)
-    return _vmHas(VMDisabled.Value, name)
-end
-
-local function _shouldBlockAnimationKey(key)
-    local lower = tostring(key or ""):lower()
-    if lower == "" then return false end
-    if _disableSelected("idle animation") and lower:find("idle", 1, true) then return true end
-    if _disableSelected("jump animation") and lower:find("jump", 1, true) then return true end
-    if _disableSelected("slide animation") and lower:find("slide", 1, true) then return true end
-    if _disableSelected("equip animation") and lower:find("equip", 1, true) then return true end
-    if _disableSelected("reload animation") and lower:find("reload", 1, true) then return true end
-    if _disableSelected("shoot animation") and (lower:find("shoot", 1, true) or lower:find("fire", 1, true) or lower:find("attack", 1, true)) then return true end
-    if _disableSelected("sprint animation") and (lower:find("sprint", 1, true) or lower:find("run", 1, true)) then return true end
-    return false
-end
-
-local function _zeroSpring(spring, value)
-    if not spring then return end
-    pcall(function()
-        spring.Value = value
-        spring.Target = value
-    end)
-end
-
-local function _forceViewmodelAimValue(vm, enabled)
-    if not vm then return end
-    local value = enabled and 1 or 0
-    vm.IsAiming = enabled == true
-    vm.Aiming = enabled == true
-    vm._is_aiming = enabled == true
-    if vm.CurrentAimValue ~= nil then
-        vm.CurrentAimValue = value
-    end
-end
-
-local function _applyViewmodelDisableToObject(vm)
-    if not vm then return end
-    if _disableSelected("sway") then _zeroSpring(vm._sway_spring, Vector2.zero) end
-    if _disableSelected("tilt") then
-        _zeroSpring(vm._tilt_spring, Vector2.zero)
-        _zeroSpring(vm._raycast_tilt_spring, 0)
-    end
-    if _disableSelected("bobbing") then
-        _zeroSpring(vm._bobbing_speed_spring, 0)
-        _zeroSpring(vm._bobbing_value_spring, Vector2.zero)
-        vm._bobbing_tick = 0
-    end
-    if _disableSelected("jump animation") then
-        _zeroSpring(vm._jump_spring, 0)
-        vm.CurrentJumpValue = 0
-    end
-    if _disableSelected("sprint animation") then
-        _zeroSpring(vm._sprinting_spring, 0)
-    end
-    if _disableSelected("aiming animation") then
-        local item = vm.ClientItem
-        local isAiming = vm.IsAiming == true or vm.Aiming == true or vm._is_aiming == true
-        pcall(function()
-            if item and item.Get then
-                isAiming = isAiming or item:Get("IsAiming") == true
-            end
-        end)
-        if isAiming and vm.CurrentAimValue ~= nil then
-            _forceViewmodelAimValue(vm, true)
-        end
-    end
-end
-
-local function _installAimingHooks()
-    if VisualStateAnim.AimingHooked then return end
-    local success, gunModule = pcall(function()
-        return require(LocalPlayer.PlayerScripts.Modules.ItemTypes.Gun)
-    end)
-    if not success or not gunModule then return end
-
-    if gunModule.StartAiming then
-        VisualStateAnim.OriginalGunStartAiming = VisualStateAnim.OriginalGunStartAiming or gunModule.StartAiming
-        gunModule.StartAiming = function(self, ...)
-            if not _disableSelected("aiming animation") then
-                return VisualStateAnim.OriginalGunStartAiming(self, ...)
-            end
-            self:SetReplicate("IsAiming", true)
-            if self.StopSprinting then self.StopSprinting:Fire() end
-            if self.ViewModel and self.ViewModel.SetAiming then self.ViewModel:SetAiming(true) end
-            self:SetReplicate("FOVOffset", self.Info and self.Info.AimFOVOffset or 0)
-            if self.ViewModel and self.ViewModel.CurrentAimValue ~= nil then
-                self.ViewModel.CurrentAimValue = 1
-            end
-            return true, "StartAiming"
-        end
-    end
-
-    if gunModule.GetAimSpeed then
-        VisualStateAnim.OriginalGunGetAimSpeed = VisualStateAnim.OriginalGunGetAimSpeed or gunModule.GetAimSpeed
-        gunModule.GetAimSpeed = function(self)
-            if _disableSelected("aiming animation") then return 999 end
-            return VisualStateAnim.OriginalGunGetAimSpeed(self)
-        end
-    end
-
-    VisualStateAnim.AimingHooked = true
-end
-
-local function _installViewmodelHooks()
-    if VisualStateAnim.ViewmodelHooked then return end
-    local ok, viewmodelModule = pcall(function()
-        return require(LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem.ClientViewModel)
-    end)
-    if ok and type(viewmodelModule) == "table" then
-        if type(viewmodelModule.Update) == "function" then
-            VisualStateAnim.OriginalViewmodelUpdate = VisualStateAnim.OriginalViewmodelUpdate or viewmodelModule.Update
-            viewmodelModule.Update = function(self, ...)
-                _applyViewmodelDisableToObject(self)
-                local result = {VisualStateAnim.OriginalViewmodelUpdate(self, ...)}
-                _applyViewmodelDisableToObject(self)
-                return unpack(result)
-            end
-        end
-        if type(viewmodelModule.MuzzleFlash) == "function" then
-            VisualStateAnim.OriginalViewmodelMuzzleFlash = VisualStateAnim.OriginalViewmodelMuzzleFlash or viewmodelModule.MuzzleFlash
-            viewmodelModule.MuzzleFlash = function(self, ...)
-                if _disableSelected("muzzle flash") then return end
-                return VisualStateAnim.OriginalViewmodelMuzzleFlash(self, ...)
-            end
-        end
-        if type(viewmodelModule.SetAiming) == "function" then
-            VisualStateAnim.OriginalViewmodelSetAiming = VisualStateAnim.OriginalViewmodelSetAiming or viewmodelModule.SetAiming
-            viewmodelModule.SetAiming = function(self, enabled, ...)
-                local result = {VisualStateAnim.OriginalViewmodelSetAiming(self, enabled, ...)}
-                if _disableSelected("aiming animation") then
-                    _forceViewmodelAimValue(self, enabled == true)
-                end
-                return unpack(result)
-            end
-        end
-        if type(viewmodelModule.PlayAnimation) == "function" then
-            VisualStateAnim.OriginalViewmodelPlayAnimation = VisualStateAnim.OriginalViewmodelPlayAnimation or viewmodelModule.PlayAnimation
-            viewmodelModule.PlayAnimation = function(self, key, ...)
-                if _shouldBlockAnimationKey(key) then return nil end
-                return VisualStateAnim.OriginalViewmodelPlayAnimation(self, key, ...)
-            end
-        end
-    end
-
-    pcall(function()
-        local animatorModule = require(LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem.ClientViewModel.ViewModelAnimator)
-        if type(animatorModule) == "table" and type(animatorModule.PlayAnimation) == "function" then
-            VisualStateAnim.OriginalAnimatorPlayAnimation = VisualStateAnim.OriginalAnimatorPlayAnimation or animatorModule.PlayAnimation
-            animatorModule.PlayAnimation = function(self, key, ...)
-                if _shouldBlockAnimationKey(key) then return nil end
-                return VisualStateAnim.OriginalAnimatorPlayAnimation(self, key, ...)
-            end
-        end
-    end)
-
-    VisualStateAnim.ViewmodelHooked = true
-end
-
-local NoAnimGroup = Tabs.Character:AddRightGroupbox("No Animation")
-
-NoAnimGroup:AddToggle("NoAnimationToggle", {
-    Text = "No Animation",
-    Tooltip = "Disables selected viewmodel animations / effects",
-    Default = false,
-    Callback = function(Value)
-        if Value then
-            _installViewmodelHooks()
-            if _disableSelected("aiming animation") then _installAimingHooks() end
-        end
-    end
-}):AddKeyPicker("NoAnimationKeybind", {
-    Default = "None", SyncToggleState = true, Mode = "Toggle", Text = "No Animation", NoUI = false,
-})
-
-NoAnimGroup:AddDropdown("NoAnimationList", {
-    Values = viewmodelDisableList,
-    Default = {},
-    Multi = true,
-    Text = "disable",
-    Searchable = false,
-    Callback = function(value)
-        if type(value) == "table" then
-            VMDisabled.Value = value
-        end
-        _installViewmodelHooks()
-        if _disableSelected("aiming animation") then _installAimingHooks() end
-    end
-})
-
--- =====================================================================
--- WIREFRAME (Misc)
--- =====================================================================
-
-local MAX_WIREFRAME_POOL = 96
-
-local function _getWireframeParent()
-    return LocalPlayer:FindFirstChildOfClass("PlayerGui") or Camera or workspace
-end
-
-local function _acquireWireframe(name, buildKey, adornee)
-    VisualStateAnim.WireframePool = VisualStateAnim.WireframePool or {}
-    VisualStateAnim.WireframePoolCount = VisualStateAnim.WireframePoolCount or {}
-
-    local poolKey = name .. "|" .. tostring(buildKey or "")
-    local bucket = VisualStateAnim.WireframePool[poolKey]
-    local wire
-    if bucket and #bucket > 0 then
-        wire = table.remove(bucket)
-        VisualStateAnim.WireframePoolCount[poolKey] = math.max((VisualStateAnim.WireframePoolCount[poolKey] or 1) - 1, 0)
-    else
-        local ok, created = pcall(function()
-            return Instance.new("WireframeHandleAdornment")
-        end)
-        if not ok or not created then return nil end
-        wire = created
-    end
-
-    wire.Name = name
-    pcall(function() wire.Adornee = adornee end)
-    pcall(function() wire.AlwaysOnTop = true end)
-    pcall(function() wire.ZIndex = 10 end)
-    pcall(function() wire.Thickness = 1 end)
-    pcall(function() wire.Transparency = 0 end)
-    pcall(function() wire.Visible = true end)
-    pcall(function() wire.Parent = _getWireframeParent() end)
-    return wire
-end
-
-local function _releaseWireframe(wire)
-    if not wire then return end
-    local buildKey
-    pcall(function()
-        buildKey = wire:GetAttribute("LionWireBuildKey")
-    end)
-    if not buildKey then
-        pcall(function() wire:Destroy() end)
-        return
-    end
-
-    VisualStateAnim.WireframePool = VisualStateAnim.WireframePool or {}
-    VisualStateAnim.WireframePoolCount = VisualStateAnim.WireframePoolCount or {}
-    local poolKey = wire.Name .. "|" .. tostring(buildKey)
-    local count = VisualStateAnim.WireframePoolCount[poolKey] or 0
-    if count >= MAX_WIREFRAME_POOL then
-        pcall(function() wire:Destroy() end)
-        return
-    end
-
-    pcall(function() wire.Visible = false end)
-    pcall(function() wire.Adornee = nil end)
-    pcall(function() wire.Parent = nil end)
-    VisualStateAnim.WireframePool[poolKey] = VisualStateAnim.WireframePool[poolKey] or {}
-    table.insert(VisualStateAnim.WireframePool[poolKey], wire)
-    VisualStateAnim.WireframePoolCount[poolKey] = count + 1
-end
-
-local function _updateWireframe(part, enabled, color)
-    VisualStateAnim.PrimitiveWireframes = VisualStateAnim.PrimitiveWireframes or setmetatable({}, {__mode = "k"})
-    local buildKey = "box|" .. tostring(part.Size)
-    local wire = VisualStateAnim.PrimitiveWireframes[part]
-    if not enabled and not wire then return end
-    local oldWire = part:FindFirstChild("__LionVMWireframe")
-    local oldBox = part:FindFirstChild("__LionVMWireframeBox")
-    if (oldWire or oldBox) and not wire then
-        if oldWire then oldWire:Destroy() end
-        if oldBox then oldBox:Destroy() end
-    end
-    if enabled then
-        if wire and not wire:IsA("WireframeHandleAdornment") then
-            _releaseWireframe(wire)
-            wire = nil
-        end
-        if not wire then
-            wire = _acquireWireframe("__LionVMWireframe", buildKey, part)
-            if wire then
-                VisualStateAnim.PrimitiveWireframes[part] = wire
-            else
-                return
-            end
-        end
-        if wire then
-            local c = color or Color3.fromRGB(255, 255, 255)
-            if wire.Color3 ~= c then
-                pcall(function() wire.Color3 = c end)
-            end
-            if wire:GetAttribute("LionWireBuildKey") ~= buildKey then
-                pcall(function() wire:Clear() end)
-                local half = part.Size * 0.5
-                local corners = {
-                    Vector3.new(-half.X, -half.Y, -half.Z), Vector3.new( half.X, -half.Y, -half.Z),
-                    Vector3.new(-half.X,  half.Y, -half.Z), Vector3.new( half.X,  half.Y, -half.Z),
-                    Vector3.new(-half.X, -half.Y,  half.Z), Vector3.new( half.X, -half.Y,  half.Z),
-                    Vector3.new(-half.X,  half.Y,  half.Z), Vector3.new( half.X,  half.Y,  half.Z),
-                }
-                local edges = {{1,2},{2,4},{4,3},{3,1},{5,6},{6,8},{8,7},{7,5},{1,5},{2,6},{3,7},{4,8}}
-                for _, edge in ipairs(edges) do
-                    pcall(function()
-                        wire:AddLine(corners[edge[1]], corners[edge[2]])
-                    end)
-                end
-                pcall(function()
-                    wire:SetAttribute("LionWireBuildKey", buildKey)
-                end)
-            end
-        end
-    else
-        _releaseWireframe(wire)
-        VisualStateAnim.PrimitiveWireframes[part] = nil
-    end
-end
-
-local _wireframeSelectedParts = setmetatable({}, { __mode = "k" })
-local _wireframeColor = Color3.fromRGB(255, 255, 255)
-local _wireframeEnabled = false
-
-local function _refreshWireframe()
-    local char = LocalPlayer.Character
-    if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            if _wireframeEnabled then
-                _wireframeSelectedParts[part] = true
-                _updateWireframe(part, true, _wireframeColor)
-            else
-                _updateWireframe(part, false)
-                _wireframeSelectedParts[part] = nil
-            end
-        end
-    end
-end
-
-local WireframeGroup = Tabs.Misc:AddLeftGroupbox("Wireframe")
-
-WireframeGroup:AddToggle("WireframeToggle", {
-    Text = "Wireframe",
-    Tooltip = "Draws a wireframe around every part on your character",
-    Default = false,
-    Callback = function(Value)
-        _wireframeEnabled = Value == true
-        _refreshWireframe()
-    end
-}):AddKeyPicker("WireframeKeybind", {
-    Default = "None", SyncToggleState = true, Mode = "Toggle", Text = "Wireframe", NoUI = false,
-})
-
-WireframeGroup:AddColorPicker("WireframeColor", {
-    Default = Color3.fromRGB(255, 255, 255),
-    Title = "wireframe color",
-    Transparency = 0,
-    Callback = function(color)
-        _wireframeColor = color
-        if _wireframeEnabled then
-            _refreshWireframe()
-        end
-    end
-})
-
-LocalPlayer.CharacterAdded:Connect(function(character)
-    task.wait(0.5)
-    if _wireframeEnabled then
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                _wireframeSelectedParts[part] = true
-                _updateWireframe(part, true, _wireframeColor)
-            end
-        end
-    end
-end)
-
-LocalPlayer.CharacterRemoving:Connect(function(character)
-    for part, _ in pairs(_wireframeSelectedParts) do
-        if part:IsDescendantOf(character) then
-            _updateWireframe(part, false)
-            _wireframeSelectedParts[part] = nil
-        end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if _wireframeEnabled then
-            local char = LocalPlayer.Character
-            if char then
-                for _, part in ipairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") and not _wireframeSelectedParts[part] then
-                        _wireframeSelectedParts[part] = true
-                        _updateWireframe(part, true, _wireframeColor)
-                    end
-                end
-            end
-        end
-        task.wait(0.25)
-    end
-end)
 
 local MiscLeft = Tabs.Misc:AddLeftGroupbox("Misc")
 local MiscRight = Tabs.Misc:AddRightGroupbox("Options")
@@ -4633,22 +4198,25 @@ Library:SetWatermarkVisibility(true)
 
 local FrameTimer = tick()
 local FrameCounter = 0
-local FPS = 60
+local FPS = 240
 local GetPing = (function() return math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()) end)
 local CanDoPing = pcall(function() return GetPing(); end)
 
 local WatermarkConnection = game:GetService("RunService").RenderStepped:Connect(function()
-	FrameCounter += 1
-	if (tick() - FrameTimer) >= 1 then
-		FPS = FrameCounter
-		FrameTimer = tick()
-		FrameCounter = 0
-	end
-	if CanDoPing then
-		Library:SetWatermark(("XE | %d fps | %d ms"):format(math.floor(FPS), GetPing()))
-	else
-		Library:SetWatermark(("XE | %d fps"):format(math.floor(FPS)))
-	end
+    FrameCounter += 1
+    if (tick() - FrameTimer) >= 1 then
+        FPS = FrameCounter
+        FrameTimer = tick()
+        FrameCounter = 0
+    end
+
+    local playerName = LocalPlayer and LocalPlayer.Name or "Player"
+
+    if CanDoPing then
+        Library:SetWatermark(("XE | %d fps | %d ms | %s"):format(math.floor(FPS), GetPing(), playerName))
+    else
+        Library:SetWatermark(("XE | %d fps | %s"):format(math.floor(FPS), playerName))
+    end
 end)
 
 Library:OnUnload(function()
@@ -4660,7 +4228,12 @@ Library:OnUnload(function()
 	pcall(function() _stopRapidFire() end)
 	pcall(function() _stopFastMelee() end)
 	pcall(function() _AutoMatch = false end)
-	pcall(function() _wireframeEnabled = false; _refreshWireframe() end)
 	print("Unloaded!")
 	Library.Unloaded = true
 end)
+
+
+
+print ("Xe ran successfully")
+else
+print ("Xe didn't ran successfully")
